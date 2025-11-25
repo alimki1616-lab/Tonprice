@@ -16,8 +16,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # تنظیمات از محیط
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8319365970:AAE9vdXVQ11arGG7DK_3N11VfdBkBO1FeFQ')
-CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@tonpricepro')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA')
+CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@Ton24Price')
 
 # API برای دریافت قیمت Toncoin با دقت بالا
 KUCOIN_API = 'https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=TON-USDT'
