@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@Ton24Price')
 
-# API برای دریافت قیمت Toncoin با دقت بالا
-KUCOIN_API = 'https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=TON-USDT'
+# API برای دریافت قیمت Toncoin با دقت بالا و درصد تغییرات
+KUCOIN_API = 'https://api.kucoin.com/api/v1/market/stats?symbol=TON-USDT'
 OKX_API = 'https://www.okx.com/api/v5/market/ticker?instId=TON-USDT'
-BINANCE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT'
-COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd'
+BINANCE_API = 'https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT'
+COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd&include_24hr_change=true'
 
 
 class TonPriceBot:
@@ -32,62 +32,77 @@ class TonPriceBot:
         self.channel = channel
         self.session = None
         self.last_price = None
+        self.last_change_percent = None
+        self.last_message = None
 
-    async def get_ton_price(self):
-        """دریافت قیمت Toncoin با retry و دقت بالا"""
+    async def get_ton_price_and_change(self):
+        """دریافت قیمت Toncoin و درصد تغییرات 24 ساعته"""
         # تلاش 3 بار
         for attempt in range(3):
             try:
                 if not self.session:
                     self.session = aiohttp.ClientSession()
                 
-                # اولویت 1: KuCoin (4 رقم اعشار)
+                # اولویت 1: KuCoin (stats API برای دریافت changeRate)
                 try:
                     async with self.session.get(KUCOIN_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
                             if data.get('code') == '200000' and 'data' in data:
-                                price = Decimal(str(data['data']['price']))
-                                logger.info(f"✅ قیمت از KuCoin: ${price}")
+                                stats = data['data']
+                                price = Decimal(str(stats['last']))
+                                # changeRate در KuCoin یک عدد اعشاری است (مثلاً 0.0344 برای 3.44%)
+                                change_rate = Decimal(str(stats.get('changeRate', '0'))) * 100
+                                logger.info(f"✅ قیمت از KuCoin: ${price} | تغییرات: {change_rate}%")
                                 self.last_price = price
-                                return price
+                                self.last_change_percent = change_rate
+                                return price, change_rate
                 except Exception as e:
                     logger.warning(f"KuCoin خطا: {e}")
                 
-                # اولویت 2: OKX (3 رقم اعشار)
+                # اولویت 2: OKX
                 try:
                     async with self.session.get(OKX_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
                             if data.get('code') == '0' and 'data' in data:
-                                price = Decimal(str(data['data'][0]['last']))
-                                logger.info(f"✅ قیمت از OKX: ${price}")
+                                ticker = data['data'][0]
+                                price = Decimal(str(ticker['last']))
+                                # changeRate در OKX همان درصد است
+                                change_rate = Decimal(str(ticker.get('changeRate', '0'))) * 100
+                                logger.info(f"✅ قیمت از OKX: ${price} | تغییرات: {change_rate}%")
                                 self.last_price = price
-                                return price
+                                self.last_change_percent = change_rate
+                                return price, change_rate
                 except Exception as e:
                     logger.warning(f"OKX خطا: {e}")
                 
-                # اولویت 3: Binance (پشتیبان)
+                # اولویت 3: Binance (24hr ticker)
                 try:
                     async with self.session.get(BINANCE_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            price = Decimal(str(data['price']))
-                            logger.info(f"✅ قیمت از Binance: ${price}")
+                            price = Decimal(str(data['lastPrice']))
+                            change_rate = Decimal(str(data.get('priceChangePercent', '0')))
+                            logger.info(f"✅ قیمت از Binance: ${price} | تغییرات: {change_rate}%")
                             self.last_price = price
-                            return price
+                            self.last_change_percent = change_rate
+                            return price, change_rate
                 except Exception as e:
                     logger.warning(f"Binance خطا: {e}")
                 
-                # اولویت 4: CoinGecko (پشتیبان)
+                # اولویت 4: CoinGecko
                 try:
                     async with self.session.get(COINGECKO_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            price = Decimal(str(data['the-open-network']['usd']))
-                            logger.info(f"✅ قیمت از CoinGecko: ${price}")
+                            ton_data = data['the-open-network']
+                            price = Decimal(str(ton_data['usd']))
+                            change_rate = Decimal(str(ton_data.get('usd_24h_change', '0')))
+                            logger.info(f"✅ قیمت از CoinGecko: ${price} | تغییرات: {change_rate}%")
                             self.last_price = price
-                            return price
+                            self.last_change_percent = change_rate
+                            return price, change_rate
                 except Exception as e:
                     logger.warning(f"CoinGecko خطا: {e}")
                 
@@ -97,36 +112,58 @@ class TonPriceBot:
             except Exception as e:
                 logger.error(f"خطا در تلاش {attempt + 1}: {e}")
         
-        # اگر همه تلاش‌ها ناموفق بود، از قیمت قبلی استفاده کن
-        if self.last_price:
-            logger.warning(f"⚠️ استفاده از قیمت قبلی: ${self.last_price}")
-            return self.last_price
+        # اگر همه تلاش‌ها ناموفق بود، از داده قبلی استفاده کن
+        if self.last_price and self.last_change_percent is not None:
+            logger.warning(f"⚠️ استفاده از داده قبلی: ${self.last_price} | {self.last_change_percent}%")
+            return self.last_price, self.last_change_percent
         
-        return None
+        return None, None
 
-    async def format_message(self, price):
-        """فرمت پیام به صورت بولد - نمایش دقیقاً 3 رقم اعشار"""
+    async def format_message(self, price, change_percent):
+        """فرمت پیام - نمایش دقیقاً 3 رقم اعشار با درصد تغییرات و نماد"""
+        # قیمت با 3 رقم اعشار
         price_rounded = price.quantize(Decimal('0.001'), rounding=ROUND_DOWN)
-        price_str = f"{price_rounded:.3f}"
-        message = f"<b>{price_str} $</b>"
+        price_str = f"${price_rounded:.3f}"
+        
+        # تعیین نماد بر اساس مثبت یا منفی بودن
+        if change_percent > 0:
+            symbol = "▲"
+            change_str = f"[+{change_percent:.2f}%]"
+        elif change_percent < 0:
+            symbol = "▼"
+            change_str = f"[{change_percent:.2f}%]"
+        else:
+            symbol = "●"
+            change_str = f"[{change_percent:.2f}%]"
+        
+        # فرمت نهایی: $1.578 ▲ [+3.44%]
+        message = f"<b>{price_str} {symbol} {change_str}</b>"
         return message
 
     async def send_price_update(self):
-        """ارسال قیمت به کانال"""
+        """ارسال قیمت به کانال - با جلوگیری از ارسال تکراری"""
         try:
-            price = await self.get_ton_price()
+            price, change_percent = await self.get_ton_price_and_change()
             
-            if price is None:
-                logger.error("❌ نتوانستیم قیمت دریافت کنیم")
+            if price is None or change_percent is None:
+                logger.error("❌ نتوانستیم قیمت یا درصد تغییرات دریافت کنیم")
                 return False
             
-            message = await self.format_message(price)
+            message = await self.format_message(price, change_percent)
+            
+            # جلوگیری از ارسال تکراری
+            if message == self.last_message:
+                logger.info(f"⏭️ پیام تکراری است، ارسال نمی‌شود: {message}")
+                return False
             
             await self.bot.send_message(
                 chat_id=self.channel,
                 text=message,
                 parse_mode=ParseMode.HTML
             )
+            
+            # ذخیره پیام آخر برای مقایسه
+            self.last_message = message
             
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
             logger.info(f"✅ قیمت ارسال شد: {message} - {current_time}")
