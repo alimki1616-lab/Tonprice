@@ -150,11 +150,6 @@ class TonPriceBot:
                 logger.error("❌ نتوانستیم قیمت دریافت کنیم")
                 return False
             
-            # جلوگیری از ارسال قیمت تکراری
-            if self.previous_price is not None and price == self.previous_price:
-                logger.info(f"⏭️ قیمت تغییر نکرده است ({price}), ارسال نمی‌شود")
-                return False
-            
             # محاسبه درصد تغییرات یک دقیقه
             if self.previous_price is not None:
                 # محاسبه تغییرات: ((قیمت فعلی - قیمت قبلی) / قیمت قبلی) * 100
@@ -165,11 +160,19 @@ class TonPriceBot:
             
             message = await self.format_message(price, one_min_change)
             
+            # جلوگیری از ارسال پیام تکراری (اگر قیمت و درصد تغییر نکرده باشد)
+            if message == self.last_message:
+                logger.info(f"⏭️ پیام تکراری است، ارسال نمی‌شود: {message}")
+                return False
+            
             await self.bot.send_message(
                 chat_id=self.channel,
                 text=message,
                 parse_mode=ParseMode.HTML
             )
+            
+            # ذخیره پیام آخر برای مقایسه
+            self.last_message = message
             
             # ذخیره قیمت فعلی به عنوان قیمت قبلی برای دقیقه بعد
             self.previous_price = price
