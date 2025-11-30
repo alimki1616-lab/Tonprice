@@ -34,6 +34,7 @@ class TonPriceBot:
         self.last_price = None
         self.last_change_percent = None
         self.last_message = None
+        self.previous_price = None  # قیمت دقیقه قبل برای محاسبه تغییرات یک دقیقه‌ای
 
     async def get_ton_price_and_change(self):
         """دریافت قیمت Toncoin و درصد تغییرات 24 ساعته"""
@@ -141,20 +142,28 @@ class TonPriceBot:
         return message
 
     async def send_price_update(self):
-        """ارسال قیمت به کانال - با جلوگیری از ارسال تکراری"""
+        """ارسال قیمت به کانال - با محاسبه تغییرات یک دقیقه‌ای"""
         try:
-            price, change_percent = await self.get_ton_price_and_change()
+            price, _ = await self.get_ton_price_and_change()
             
-            if price is None or change_percent is None:
-                logger.error("❌ نتوانستیم قیمت یا درصد تغییرات دریافت کنیم")
+            if price is None:
+                logger.error("❌ نتوانستیم قیمت دریافت کنیم")
                 return False
             
-            message = await self.format_message(price, change_percent)
-            
-            # جلوگیری از ارسال تکراری
-            if message == self.last_message:
-                logger.info(f"⏭️ پیام تکراری است، ارسال نمی‌شود: {message}")
+            # جلوگیری از ارسال قیمت تکراری
+            if self.previous_price is not None and price == self.previous_price:
+                logger.info(f"⏭️ قیمت تغییر نکرده است ({price}), ارسال نمی‌شود")
                 return False
+            
+            # محاسبه درصد تغییرات یک دقیقه
+            if self.previous_price is not None:
+                # محاسبه تغییرات: ((قیمت فعلی - قیمت قبلی) / قیمت قبلی) * 100
+                one_min_change = ((price - self.previous_price) / self.previous_price) * 100
+            else:
+                # اولین بار که ربات اجرا می‌شود
+                one_min_change = Decimal('0')
+            
+            message = await self.format_message(price, one_min_change)
             
             await self.bot.send_message(
                 chat_id=self.channel,
@@ -162,8 +171,8 @@ class TonPriceBot:
                 parse_mode=ParseMode.HTML
             )
             
-            # ذخیره پیام آخر برای مقایسه
-            self.last_message = message
+            # ذخیره قیمت فعلی به عنوان قیمت قبلی برای دقیقه بعد
+            self.previous_price = price
             
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
             logger.info(f"✅ قیمت ارسال شد: {message} - {current_time}")
