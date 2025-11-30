@@ -19,11 +19,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@Ton24Price')
 
-# API برای دریافت قیمت Toncoin با دقت بالا
-BINANCE_TICKER_API = 'https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT'
-BINANCE_KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=TONUSDT&interval=1m&limit=2'
+# API های صرافی با درصد تغییرات واقعی
+BINANCE_24HR_API = 'https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT'
 OKX_API = 'https://www.okx.com/api/v5/market/ticker?instId=TON-USDT'
-KUCOIN_API = 'https://api.kucoin.com/api/v1/market/stats?symbol=TON-USDT'
+GATE_API = 'https://api.gateio.ws/api/v4/spot/tickers?currency_pair=TON_USDT'
 
 
 class TonPriceBot:
@@ -31,46 +30,33 @@ class TonPriceBot:
         self.bot = Bot(token=token)
         self.channel = channel
         self.session = None
-        self.last_price = None
-        self.last_change_percent = None
-        self.last_message = None
-        self.previous_price = None  # قیمت دقیقه قبل برای محاسبه تغییرات یک دقیقه‌ای
         self.last_sent_price = None  # آخرین قیمتی که ارسال شده
         self.last_sent_change = None  # آخرین درصد تغییری که ارسال شده
+        self.is_first_message = True  # آیا پیام اول است؟
 
-    async def get_ton_price_and_change(self):
-        """دریافت قیمت Toncoin و درصد تغییرات یک دقیقه از صرافی"""
-        # تلاش 3 بار
+    async def get_ton_price_from_exchange(self):
+        """دریافت قیمت و درصد تغییرات مستقیم از صرافی"""
+        
         for attempt in range(3):
             try:
                 if not self.session:
                     self.session = aiohttp.ClientSession()
                 
-                # اولویت 1: Binance Klines (کندل 1 دقیقه‌ای)
+                # اولویت 1: Binance 24hr Ticker (درصد تغییرات 24 ساعته واقعی)
                 try:
-                    async with self.session.get(BINANCE_KLINE_API, timeout=15) as response:
+                    async with self.session.get(BINANCE_24HR_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if len(data) >= 2:
-                                # کندل دوم از آخر (دقیقه قبل - بسته شده)
-                                prev_candle = data[-2]
-                                prev_close = Decimal(str(prev_candle[4]))  # قیمت بسته شدن دقیقه قبل
-                                
-                                # کندل آخر (دقیقه فعلی - در حال تشکیل)
-                                current_candle = data[-1]
-                                current_price = Decimal(str(current_candle[4]))  # قیمت فعلی
-                                
-                                # محاسبه درصد تغییرات یک دقیقه
-                                one_min_change = ((current_price - prev_close) / prev_close) * 100
-                                
-                                logger.info(f"✅ قیمت از Binance: ${current_price} | تغییرات 1 دقیقه: {one_min_change:.2f}%")
-                                self.last_price = current_price
-                                self.last_change_percent = one_min_change
-                                return current_price, one_min_change
+                            current_price = Decimal(str(data['lastPrice']))
+                            # درصد تغییرات 24 ساعته از صرافی
+                            change_percent = Decimal(str(data['priceChangePercent']))
+                            
+                            logger.info(f"✅ Binance: قیمت=${current_price} | تغییرات 24h={change_percent:.2f}% (از صرافی)")
+                            return current_price, change_percent
                 except Exception as e:
-                    logger.warning(f"Binance Klines خطا: {e}")
+                    logger.warning(f"Binance 24hr خطا: {e}")
                 
-                # اولویت 2: OKX (استفاده از قیمت باز و فعلی)
+                # اولویت 2: OKX Ticker (درصد تغییرات از صرافی)
                 try:
                     async with self.session.get(OKX_API, timeout=15) as response:
                         if response.status == 200:
@@ -78,42 +64,31 @@ class TonPriceBot:
                             if data.get('code') == '0' and 'data' in data:
                                 ticker = data['data'][0]
                                 current_price = Decimal(str(ticker['last']))
-                                open_price = Decimal(str(ticker['open24h']))  # قیمت باز 24 ساعته (بهترین گزینه موجود)
+                                # درصد تغییرات UTC0 (24 ساعته)
+                                change_percent_str = ticker.get('sodUtc0', '0')
+                                change_percent = Decimal(str(change_percent_str)) * 100  # تبدیل به درصد
                                 
-                                # اگر قیمت قبلی داریم، از آن استفاده کنیم
-                                if self.last_price:
-                                    one_min_change = ((current_price - self.last_price) / self.last_price) * 100
-                                else:
-                                    one_min_change = Decimal('0')
-                                
-                                logger.info(f"✅ قیمت از OKX: ${current_price} | تغییرات 1 دقیقه: {one_min_change:.2f}%")
-                                self.last_price = current_price
-                                self.last_change_percent = one_min_change
-                                return current_price, one_min_change
+                                logger.info(f"✅ OKX: قیمت=${current_price} | تغییرات 24h={change_percent:.2f}% (از صرافی)")
+                                return current_price, change_percent
                 except Exception as e:
                     logger.warning(f"OKX خطا: {e}")
                 
-                # اولویت 3: KuCoin
+                # اولویت 3: Gate.io (درصد تغییرات از صرافی)
                 try:
-                    async with self.session.get(KUCOIN_API, timeout=15) as response:
+                    async with self.session.get(GATE_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if data.get('code') == '200000' and 'data' in data:
-                                stats = data['data']
-                                current_price = Decimal(str(stats['last']))
+                            if isinstance(data, list) and len(data) > 0:
+                                ticker = data[0]
+                                current_price = Decimal(str(ticker['last']))
+                                # درصد تغییرات به صورت رشته مثل "+2.34%"
+                                change_str = ticker.get('change_percentage', '0%').replace('%', '').replace('+', '')
+                                change_percent = Decimal(str(change_str))
                                 
-                                # اگر قیمت قبلی داریم، از آن استفاده کنیم
-                                if self.last_price:
-                                    one_min_change = ((current_price - self.last_price) / self.last_price) * 100
-                                else:
-                                    one_min_change = Decimal('0')
-                                
-                                logger.info(f"✅ قیمت از KuCoin: ${current_price} | تغییرات 1 دقیقه: {one_min_change:.2f}%")
-                                self.last_price = current_price
-                                self.last_change_percent = one_min_change
-                                return current_price, one_min_change
+                                logger.info(f"✅ Gate.io: قیمت=${current_price} | تغییرات 24h={change_percent:.2f}% (از صرافی)")
+                                return current_price, change_percent
                 except Exception as e:
-                    logger.warning(f"KuCoin خطا: {e}")
+                    logger.warning(f"Gate.io خطا: {e}")
                 
                 if attempt < 2:
                     await asyncio.sleep(2)
@@ -121,51 +96,58 @@ class TonPriceBot:
             except Exception as e:
                 logger.error(f"خطا در تلاش {attempt + 1}: {e}")
         
-        # اگر همه تلاش‌ها ناموفق بود، از داده قبلی استفاده کن
-        if self.last_price and self.last_change_percent is not None:
-            logger.warning(f"⚠️ استفاده از داده قبلی: ${self.last_price} | {self.last_change_percent}%")
-            return self.last_price, self.last_change_percent
-        
+        logger.error("❌ نتوانستیم از هیچ صرافی قیمت دریافت کنیم")
         return None, None
 
     async def format_message(self, price, change_percent):
-        """فرمت پیام - نمایش دقیقاً 3 رقم اعشار با درصد تغییرات و نماد"""
+        """فرمت پیام - نمایش دقیقاً 3 رقم اعشار با درصد تغییرات و فلش"""
         # قیمت با 3 رقم اعشار
         price_rounded = price.quantize(Decimal('0.001'), rounding=ROUND_DOWN)
         price_str = f"${price_rounded:.3f}"
         
-        # تعیین نماد بر اساس مثبت یا منفی بودن
+        # تعیین فلش بر اساس مثبت یا منفی بودن
         if change_percent > 0:
-            symbol = "🟢"
+            symbol = "▲"
             change_str = f"[+{change_percent:.2f}%]"
         elif change_percent < 0:
-            symbol = "🔴"
+            symbol = "▼"
             change_str = f"[{change_percent:.2f}%]"
         else:
-            symbol = "⚪"
+            # برای صفر (ارسال نمی‌شود)
+            symbol = "▬"
             change_str = f"[{change_percent:.2f}%]"
         
-        # فرمت نهایی: $1.578 🟢 [+3.44%]
+        # فرمت نهایی: $1.578 ▲ [+3.44%]
         message = f"<b>{price_str} {symbol} {change_str}</b>"
         return message
 
     async def send_price_update(self):
-        """ارسال قیمت به کانال - با درصد تغییرات یک دقیقه از صرافی"""
+        """ارسال قیمت به کانال - با درصد تغییرات واقعی از صرافی"""
         try:
-            price, one_min_change = await self.get_ton_price_and_change()
+            price, change_percent = await self.get_ton_price_from_exchange()
             
-            if price is None or one_min_change is None:
+            if price is None or change_percent is None:
                 logger.error("❌ نتوانستیم قیمت یا درصد تغییرات دریافت کنیم")
                 return False
             
-            # جلوگیری از ارسال تکراری: چک کردن قیمت و درصد
+            # 🚫 جلوگیری از ارسال پیام با تغییر صفر (⚪)
+            if change_percent == 0:
+                logger.info(f"⏭️ تغییر صفر است، ارسال نمی‌شود: ${price} [0.00%]")
+                return False
+            
+            # 🚫 جلوگیری از ارسال تکراری
             if self.last_sent_price is not None and self.last_sent_change is not None:
-                # اگر هم قیمت و هم درصد تغییر نکرده باشد، ارسال نکن
-                if price == self.last_sent_price and one_min_change == self.last_sent_change:
-                    logger.info(f"⏭️ قیمت و درصد تغییر نکرده، ارسال نمی‌شود: ${price} [{one_min_change:.2f}%]")
+                # اگر هم قیمت و هم درصد عینا تکراری باشند
+                price_diff = abs(price - self.last_sent_price)
+                change_diff = abs(change_percent - self.last_sent_change)
+                
+                # اگر تفاوت خیلی کم باشد (کمتر از 0.001 دلار و 0.01 درصد)
+                if price_diff < Decimal('0.001') and change_diff < Decimal('0.01'):
+                    logger.info(f"⏭️ قیمت تکراری است، ارسال نمی‌شود: ${price} [{change_percent:.2f}%]")
                     return False
             
-            message = await self.format_message(price, one_min_change)
+            # ✅ ارسال پیام
+            message = await self.format_message(price, change_percent)
             
             await self.bot.send_message(
                 chat_id=self.channel,
@@ -175,10 +157,11 @@ class TonPriceBot:
             
             # ذخیره قیمت و درصد ارسال شده
             self.last_sent_price = price
-            self.last_sent_change = one_min_change
+            self.last_sent_change = change_percent
+            self.is_first_message = False
             
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-            logger.info(f"✅ قیمت ارسال شد: {message} - {current_time}")
+            logger.info(f"✅ پیام ارسال شد: {message} - {current_time}")
             return True
             
         except TelegramError as e:
