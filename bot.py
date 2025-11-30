@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@Ton24Price')
 
-# API های صرافی با درصد تغییرات واقعی
-BINANCE_24HR_API = 'https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT'
-OKX_API = 'https://www.okx.com/api/v5/market/ticker?instId=TON-USDT'
-GATE_API = 'https://api.gateio.ws/api/v4/spot/tickers?currency_pair=TON_USDT'
+# API های صرافی - کندل 1 دقیقه‌ای برای محاسبه درصد تغییرات یک دقیقه
+BINANCE_KLINE_API = 'https://api.binance.com/api/v3/klines?symbol=TONUSDT&interval=1m&limit=2'
+OKX_KLINE_API = 'https://www.okx.com/api/v5/market/candles?instId=TON-USDT&bar=1m&limit=2'
+BINANCE_TICKER_API = 'https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT'
 
 
 class TonPriceBot:
@@ -35,60 +35,81 @@ class TonPriceBot:
         self.is_first_message = True  # آیا پیام اول است؟
 
     async def get_ton_price_from_exchange(self):
-        """دریافت قیمت و درصد تغییرات مستقیم از صرافی"""
+        """دریافت قیمت و محاسبه درصد تغییرات یک دقیقه از کندل‌های صرافی"""
         
         for attempt in range(3):
             try:
                 if not self.session:
                     self.session = aiohttp.ClientSession()
                 
-                # اولویت 1: Binance 24hr Ticker (درصد تغییرات 24 ساعته واقعی)
+                # اولویت 1: Binance Klines - کندل 1 دقیقه‌ای
                 try:
-                    async with self.session.get(BINANCE_24HR_API, timeout=15) as response:
+                    async with self.session.get(BINANCE_KLINE_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            current_price = Decimal(str(data['lastPrice']))
-                            # درصد تغییرات 24 ساعته از صرافی
-                            change_percent = Decimal(str(data['priceChangePercent']))
+                            if len(data) >= 2:
+                                # کندل دوم از آخر (دقیقه قبل - بسته شده)
+                                prev_candle = data[-2]
+                                prev_close = Decimal(str(prev_candle[4]))  # قیمت بسته شدن
+                                
+                                # کندل آخر (دقیقه فعلی)
+                                current_candle = data[-1]
+                                current_price = Decimal(str(current_candle[4]))  # قیمت فعلی
+                                
+                                # محاسبه درصد تغییرات یک دقیقه
+                                if prev_close > 0:
+                                    change_percent = ((current_price - prev_close) / prev_close) * 100
+                                else:
+                                    change_percent = Decimal('0')
+                                
+                                logger.info(f"✅ Binance: قیمت=${current_price} | قیمت قبل=${prev_close} | تغییرات 1m={change_percent:.2f}%")
+                                return current_price, change_percent
+                except Exception as e:
+                    logger.warning(f"Binance Klines خطا: {e}")
+                
+                # اولویت 2: OKX Candles - کندل 1 دقیقه‌ای
+                try:
+                    async with self.session.get(OKX_KLINE_API, timeout=15) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if data.get('code') == '0' and 'data' in data and len(data['data']) >= 2:
+                                candles = data['data']
+                                # OKX از جدید به قدیم مرتب می‌کند
+                                current_candle = candles[0]  # جدیدترین
+                                prev_candle = candles[1]     # قبلی
+                                
+                                current_price = Decimal(str(current_candle[4]))  # close
+                                prev_close = Decimal(str(prev_candle[4]))        # close قبلی
+                                
+                                # محاسبه درصد تغییرات یک دقیقه
+                                if prev_close > 0:
+                                    change_percent = ((current_price - prev_close) / prev_close) * 100
+                                else:
+                                    change_percent = Decimal('0')
+                                
+                                logger.info(f"✅ OKX: قیمت=${current_price} | قیمت قبل=${prev_close} | تغییرات 1m={change_percent:.2f}%")
+                                return current_price, change_percent
+                except Exception as e:
+                    logger.warning(f"OKX Candles خطا: {e}")
+                
+                # اولویت 3: Binance Ticker (فقط قیمت فعلی) + استفاده از قیمت قبلی ذخیره شده
+                try:
+                    async with self.session.get(BINANCE_TICKER_API, timeout=15) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            current_price = Decimal(str(data['price']))
                             
-                            logger.info(f"✅ Binance: قیمت=${current_price} | تغییرات 24h={change_percent:.2f}% (از صرافی)")
+                            # اگر قیمت قبلی داریم، از آن برای محاسبه استفاده کنیم
+                            if self.last_sent_price:
+                                change_percent = ((current_price - self.last_sent_price) / self.last_sent_price) * 100
+                                logger.info(f"✅ Binance Ticker: قیمت=${current_price} | تغییرات={change_percent:.2f}% (نسبت به پیام قبل)")
+                            else:
+                                change_percent = Decimal('0')
+                                logger.info(f"✅ Binance Ticker: قیمت=${current_price} | پیام اول")
+                            
                             return current_price, change_percent
                 except Exception as e:
-                    logger.warning(f"Binance 24hr خطا: {e}")
-                
-                # اولویت 2: OKX Ticker (درصد تغییرات از صرافی)
-                try:
-                    async with self.session.get(OKX_API, timeout=15) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if data.get('code') == '0' and 'data' in data:
-                                ticker = data['data'][0]
-                                current_price = Decimal(str(ticker['last']))
-                                # درصد تغییرات UTC0 (24 ساعته)
-                                change_percent_str = ticker.get('sodUtc0', '0')
-                                change_percent = Decimal(str(change_percent_str)) * 100  # تبدیل به درصد
-                                
-                                logger.info(f"✅ OKX: قیمت=${current_price} | تغییرات 24h={change_percent:.2f}% (از صرافی)")
-                                return current_price, change_percent
-                except Exception as e:
-                    logger.warning(f"OKX خطا: {e}")
-                
-                # اولویت 3: Gate.io (درصد تغییرات از صرافی)
-                try:
-                    async with self.session.get(GATE_API, timeout=15) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if isinstance(data, list) and len(data) > 0:
-                                ticker = data[0]
-                                current_price = Decimal(str(ticker['last']))
-                                # درصد تغییرات به صورت رشته مثل "+2.34%"
-                                change_str = ticker.get('change_percentage', '0%').replace('%', '').replace('+', '')
-                                change_percent = Decimal(str(change_str))
-                                
-                                logger.info(f"✅ Gate.io: قیمت=${current_price} | تغییرات 24h={change_percent:.2f}% (از صرافی)")
-                                return current_price, change_percent
-                except Exception as e:
-                    logger.warning(f"Gate.io خطا: {e}")
+                    logger.warning(f"Binance Ticker خطا: {e}")
                 
                 if attempt < 2:
                     await asyncio.sleep(2)
