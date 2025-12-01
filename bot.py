@@ -58,6 +58,8 @@ class TonPriceBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
         self.session = None
+        self.prev_price = None
+        self.prev_change = None
         self.prev_price_str = None
         self.prev_change_str = None
         self.last_message = None
@@ -66,7 +68,7 @@ class TonPriceBot:
         now = datetime.now(timezone.utc)
         wait_time = 60 - now.second - (now.microsecond / 1000000)
         if wait_time > 0:
-            logger.info(f"⏳ {wait_time:.1f}s تا دقیقه بعد")
+            logger.info(f"⏳ {wait_time:.1f}s")
             await asyncio.sleep(wait_time)
 
     async def get_price_from_api(self, api):
@@ -93,12 +95,10 @@ class TonPriceBot:
             price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
             change_str = f"{change:.2f}"
             
-            # اولین بار
             if self.prev_price_str is None:
                 logger.info(f"✅ {name}: ${price_str} [{change_str}%]")
                 return price, change, price_str, change_str, name
             
-            # بررسی تکراری نبودن
             if price_str != self.prev_price_str or change_str != self.prev_change_str:
                 logger.info(f"✅ {name}: ${price_str} [{change_str}%]")
                 return price, change, price_str, change_str, name
@@ -112,18 +112,21 @@ class TonPriceBot:
         price, change, price_str, change_str, source = result
         
         if price is None:
-            logger.info("❌ همه API ها تکراری")
+            logger.info("❌ همه تکراری")
             return False
         
-        # تعیین فلش
-        if self.prev_price_str is None:
+        if self.prev_price is None:
             arrow = "▲"
-        elif price_str > self.prev_price_str or change_str > self.prev_change_str:
+        elif price > self.prev_price:
             arrow = "▲"
-        elif price_str < self.prev_price_str or change_str < self.prev_change_str:
+        elif price < self.prev_price:
+            arrow = "▼"
+        elif change > self.prev_change:
+            arrow = "▲"
+        elif change < self.prev_change:
             arrow = "▼"
         else:
-            return False
+            arrow = "▲"
         
         if change > 0:
             change_text = f"[+{change_str}%]"
@@ -133,7 +136,6 @@ class TonPriceBot:
         message = f"<b>${price_str} {arrow} {change_text}</b>"
         
         if message == self.last_message:
-            logger.info("⏭️ پیام تکراری")
             return False
         
         try:
@@ -145,6 +147,8 @@ class TonPriceBot:
             now = datetime.now(timezone.utc).strftime('%H:%M:%S')
             logger.info(f"✅ [{now}] {source}: {message}")
             
+            self.prev_price = price
+            self.prev_change = change
             self.prev_price_str = price_str
             self.prev_change_str = change_str
             self.last_message = message
