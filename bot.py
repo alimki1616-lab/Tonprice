@@ -53,23 +53,17 @@ class TonPriceBot:
             price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
             change_str = f"{change:.2f}"
             
+            # اولین پیام - ارسال با ▲
             if self.prev_price is None:
-                self.prev_price = price
-                self.prev_change = change
-                logger.info(f"📌 اولیه: ${price_str} [{change_str}%]")
-                return False
-            
-            price_up = price > self.prev_price
-            price_down = price < self.prev_price
-            change_up = change > self.prev_change
-            change_down = change < self.prev_change
-            
-            if price_up or change_up:
                 arrow = "▲"
-            elif price_down or change_down:
+            elif price > self.prev_price or change > self.prev_change:
+                arrow = "▲"
+            elif price < self.prev_price or change < self.prev_change:
                 arrow = "▼"
             else:
                 logger.info(f"⏭️ بدون تغییر: ${price_str}")
+                self.prev_price = price
+                self.prev_change = change
                 return False
             
             if change > 0:
@@ -106,6 +100,7 @@ class TonPriceBot:
             bot_info = await self.bot.get_me()
             logger.info(f"✅ @{bot_info.username}")
             
+            # اولین ارسال فوری
             await self.send_price()
             
             while True:
