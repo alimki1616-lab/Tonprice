@@ -14,7 +14,28 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA'
 CHANNEL_USERNAME = '@Ton24Price'
 
-COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd&include_24hr_change=true'
+APIS = [
+    {
+        'name': 'KuCoin',
+        'url': 'https://api.kucoin.com/api/v1/market/stats?symbol=TON-USDT',
+        'parse': lambda d: (Decimal(d['data']['last']), Decimal(d['data']['changeRate']) * 100)
+    },
+    {
+        'name': 'OKX',
+        'url': 'https://www.okx.com/api/v5/market/ticker?instId=TON-USDT',
+        'parse': lambda d: (Decimal(d['data'][0]['last']), ((Decimal(d['data'][0]['last']) - Decimal(d['data'][0]['open24h'])) / Decimal(d['data'][0]['open24h'])) * 100)
+    },
+    {
+        'name': 'Gate.io',
+        'url': 'https://api.gateio.ws/api/v4/spot/tickers?currency_pair=TON_USDT',
+        'parse': lambda d: (Decimal(d[0]['last']), Decimal(d[0]['change_percentage']))
+    },
+    {
+        'name': 'CoinGecko',
+        'url': 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd&include_24hr_change=true',
+        'parse': lambda d: (Decimal(str(d['the-open-network']['usd'])), Decimal(str(d['the-open-network']['usd_24h_change'])))
+    },
+]
 
 
 class TonPriceBot:
@@ -25,28 +46,47 @@ class TonPriceBot:
         self.prev_change = None
         self.last_message = None
 
-    async def get_price(self):
+    async def get_price_from_api(self, api):
         try:
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-            
-            async with self.session.get(COINGECKO_API, timeout=aiohttp.ClientTimeout(total=15)) as response:
+            async with self.session.get(api['url'], timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if 'the-open-network' in data:
-                        ton = data['the-open-network']
-                        price = Decimal(str(ton['usd']))
-                        change = Decimal(str(ton.get('usd_24h_change', 0)))
-                        logger.info(f"CoinGecko: ${price} | {change:.2f}%")
-                        return price, change
-        except Exception as e:
-            logger.error(f"خطا: {e}")
-        return None, None
+                    price, change = api['parse'](data)
+                    return price, change, api['name']
+        except:
+            pass
+        return None, None, None
+
+    async def get_best_price(self):
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+        
+        for api in APIS:
+            price, change, name = await self.get_price_from_api(api)
+            
+            if price is None:
+                continue
+            
+            price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
+            change_str = f"{change:.2f}"
+            
+            if self.prev_price is None:
+                logger.info(f"✅ {name}: ${price_str} [{change_str}%]")
+                return price, change, name
+            
+            if price != self.prev_price or change != self.prev_change:
+                logger.info(f"✅ {name}: ${price_str} [{change_str}%]")
+                return price, change, name
+            else:
+                logger.info(f"⏭️ {name}: تکراری")
+        
+        return None, None, None
 
     async def send_price(self):
-        price, change = await self.get_price()
+        price, change, source = await self.get_best_price()
         
         if price is None:
+            logger.info("❌ همه API ها تکراری")
             return False
         
         price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
@@ -59,8 +99,6 @@ class TonPriceBot:
         elif price < self.prev_price or change < self.prev_change:
             arrow = "▼"
         else:
-            self.prev_price = price
-            self.prev_change = change
             return False
         
         if change > 0:
@@ -79,7 +117,7 @@ class TonPriceBot:
                 text=message,
                 parse_mode=ParseMode.HTML
             )
-            logger.info(f"✅ {message}")
+            logger.info(f"✅ {source}: {message}")
             
             self.prev_price = price
             self.prev_change = change
