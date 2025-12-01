@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from decimal import Decimal, ROUND_DOWN
+from datetime import datetime, timezone
 from telegram import Bot
 from telegram.constants import ParseMode
 import aiohttp
@@ -45,6 +46,15 @@ class TonPriceBot:
         self.prev_price = None
         self.prev_change = None
         self.last_message = None
+
+    async def wait_for_next_minute(self):
+        now = datetime.now(timezone.utc)
+        seconds = now.second
+        microseconds = now.microsecond
+        wait_time = 60 - seconds - (microseconds / 1000000)
+        if wait_time > 0:
+            logger.info(f"⏳ {wait_time:.1f} ثانیه تا دقیقه بعد")
+            await asyncio.sleep(wait_time)
 
     async def get_price_from_api(self, api):
         try:
@@ -117,7 +127,8 @@ class TonPriceBot:
                 text=message,
                 parse_mode=ParseMode.HTML
             )
-            logger.info(f"✅ {source}: {message}")
+            now = datetime.now(timezone.utc).strftime('%H:%M:%S')
+            logger.info(f"✅ [{now}] {source}: {message}")
             
             self.prev_price = price
             self.prev_change = change
@@ -133,10 +144,8 @@ class TonPriceBot:
         me = await self.bot.get_me()
         logger.info(f"@{me.username}")
         
-        await self.send_price()
-        
         while True:
-            await asyncio.sleep(60)
+            await self.wait_for_next_minute()
             await self.send_price()
 
 
