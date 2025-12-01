@@ -1,4 +1,3 @@
-import os
 import asyncio
 import logging
 from decimal import Decimal, ROUND_DOWN
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA'
 CHANNEL_USERNAME = '@Ton24Price'
 
-BINANCE_API = 'https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT'
+COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd&include_24hr_change=true'
 
 
 class TonPriceBot:
@@ -31,30 +30,28 @@ class TonPriceBot:
             if not self.session:
                 self.session = aiohttp.ClientSession()
             
-            async with self.session.get(BINANCE_API, timeout=aiohttp.ClientTimeout(total=15)) as response:
+            async with self.session.get(COINGECKO_API, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status == 200:
                     data = await response.json()
-                    price = Decimal(str(data['lastPrice']))
-                    change = Decimal(str(data['priceChangePercent']))
-                    logger.info(f"قیمت از بایننس: ${price} | {change}%")
-                    return price, change
-                else:
-                    logger.error(f"خطای بایننس: {response.status}")
+                    if 'the-open-network' in data:
+                        ton = data['the-open-network']
+                        price = Decimal(str(ton['usd']))
+                        change = Decimal(str(ton.get('usd_24h_change', 0)))
+                        logger.info(f"CoinGecko: ${price} | {change:.2f}%")
+                        return price, change
         except Exception as e:
-            logger.error(f"خطای دریافت قیمت: {e}")
+            logger.error(f"خطا: {e}")
         return None, None
 
     async def send_price(self):
         price, change = await self.get_price()
         
         if price is None:
-            logger.error("قیمت دریافت نشد!")
             return False
         
         price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
         change_str = f"{change:.2f}"
         
-        # تعیین فلش
         if self.prev_price is None:
             arrow = "▲"
         elif price > self.prev_price or change > self.prev_change:
@@ -62,7 +59,6 @@ class TonPriceBot:
         elif price < self.prev_price or change < self.prev_change:
             arrow = "▼"
         else:
-            logger.info(f"بدون تغییر: ${price_str}")
             self.prev_price = price
             self.prev_change = change
             return False
@@ -75,7 +71,6 @@ class TonPriceBot:
         message = f"<b>${price_str} {arrow} {change_text}</b>"
         
         if message == self.last_message:
-            logger.info("پیام تکراری")
             return False
         
         try:
@@ -84,28 +79,22 @@ class TonPriceBot:
                 text=message,
                 parse_mode=ParseMode.HTML
             )
-            logger.info(f"ارسال شد: {message}")
+            logger.info(f"✅ {message}")
             
             self.prev_price = price
             self.prev_change = change
             self.last_message = message
             return True
-            
         except Exception as e:
-            logger.error(f"خطای ارسال: {e}")
+            logger.error(f"❌ {e}")
             return False
 
     async def run(self):
-        logger.info("ربات شروع شد...")
+        logger.info("🚀 شروع")
         
-        try:
-            me = await self.bot.get_me()
-            logger.info(f"بات: @{me.username}")
-        except Exception as e:
-            logger.error(f"خطای اتصال به بات: {e}")
-            return
+        me = await self.bot.get_me()
+        logger.info(f"@{me.username}")
         
-        # ارسال اول
         await self.send_price()
         
         while True:
