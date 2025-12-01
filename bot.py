@@ -4,25 +4,23 @@ import logging
 from decimal import Decimal, ROUND_DOWN
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
 import aiohttp
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA')
-CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@Ton24Price')
+BOT_TOKEN = '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA'
+CHANNEL_USERNAME = '@Ton24Price'
 
 BINANCE_API = 'https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT'
 
 
 class TonPriceBot:
-    def __init__(self, token, channel):
-        self.bot = Bot(token=token)
-        self.channel = channel
+    def __init__(self):
+        self.bot = Bot(token=BOT_TOKEN)
         self.session = None
         self.prev_price = None
         self.prev_change = None
@@ -33,91 +31,88 @@ class TonPriceBot:
             if not self.session:
                 self.session = aiohttp.ClientSession()
             
-            async with self.session.get(BINANCE_API, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with self.session.get(BINANCE_API, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status == 200:
                     data = await response.json()
                     price = Decimal(str(data['lastPrice']))
                     change = Decimal(str(data['priceChangePercent']))
+                    logger.info(f"قیمت از بایننس: ${price} | {change}%")
                     return price, change
+                else:
+                    logger.error(f"خطای بایننس: {response.status}")
         except Exception as e:
-            logger.error(f"خطا: {e}")
+            logger.error(f"خطای دریافت قیمت: {e}")
         return None, None
 
     async def send_price(self):
+        price, change = await self.get_price()
+        
+        if price is None:
+            logger.error("قیمت دریافت نشد!")
+            return False
+        
+        price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
+        change_str = f"{change:.2f}"
+        
+        # تعیین فلش
+        if self.prev_price is None:
+            arrow = "▲"
+        elif price > self.prev_price or change > self.prev_change:
+            arrow = "▲"
+        elif price < self.prev_price or change < self.prev_change:
+            arrow = "▼"
+        else:
+            logger.info(f"بدون تغییر: ${price_str}")
+            self.prev_price = price
+            self.prev_change = change
+            return False
+        
+        if change > 0:
+            change_text = f"[+{change_str}%]"
+        else:
+            change_text = f"[{change_str}%]"
+        
+        message = f"<b>${price_str} {arrow} {change_text}</b>"
+        
+        if message == self.last_message:
+            logger.info("پیام تکراری")
+            return False
+        
         try:
-            price, change = await self.get_price()
-            
-            if price is None:
-                return False
-            
-            price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
-            change_str = f"{change:.2f}"
-            
-            # اولین پیام - ارسال با ▲
-            if self.prev_price is None:
-                arrow = "▲"
-            elif price > self.prev_price or change > self.prev_change:
-                arrow = "▲"
-            elif price < self.prev_price or change < self.prev_change:
-                arrow = "▼"
-            else:
-                logger.info(f"⏭️ بدون تغییر: ${price_str}")
-                self.prev_price = price
-                self.prev_change = change
-                return False
-            
-            if change > 0:
-                change_text = f"[+{change_str}%]"
-            else:
-                change_text = f"[{change_str}%]"
-            
-            message = f"<b>${price_str} {arrow} {change_text}</b>"
-            
-            if message == self.last_message:
-                logger.info(f"⏭️ تکراری")
-                return False
-            
             await self.bot.send_message(
-                chat_id=self.channel,
+                chat_id=CHANNEL_USERNAME,
                 text=message,
                 parse_mode=ParseMode.HTML
             )
+            logger.info(f"ارسال شد: {message}")
             
             self.prev_price = price
             self.prev_change = change
             self.last_message = message
-            logger.info(f"✅ {message}")
             return True
             
-        except TelegramError as e:
-            logger.error(f"❌ {e}")
+        except Exception as e:
+            logger.error(f"خطای ارسال: {e}")
             return False
 
     async def run(self):
-        logger.info("🚀 شروع")
+        logger.info("ربات شروع شد...")
         
         try:
-            bot_info = await self.bot.get_me()
-            logger.info(f"✅ @{bot_info.username}")
-            
-            # اولین ارسال فوری
-            await self.send_price()
-            
-            while True:
-                await asyncio.sleep(60)
-                await self.send_price()
-                
+            me = await self.bot.get_me()
+            logger.info(f"بات: @{me.username}")
         except Exception as e:
-            logger.error(f"❌ {e}")
-        finally:
-            if self.session:
-                await self.session.close()
-
-
-async def main():
-    bot = TonPriceBot(BOT_TOKEN, CHANNEL_USERNAME)
-    await bot.run()
+            logger.error(f"خطای اتصال به بات: {e}")
+            return
+        
+        # ارسال اول
+        await self.send_price()
+        
+        while True:
+            await asyncio.sleep(60)
+            await self.send_price()
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    bot = TonPriceBot()
+    asyncio.run(bot.run())
