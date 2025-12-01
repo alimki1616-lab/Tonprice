@@ -34,7 +34,7 @@ APIS = [
     {
         'name': 'MEXC',
         'url': 'https://api.mexc.com/api/v3/ticker/24hr?symbol=TONUSDT',
-        'parse': lambda d: (Decimal(d['lastPrice']), Decimal(d['priceChangePercent']) * 100)
+        'parse': lambda d: (Decimal(d['lastPrice']), Decimal(d['priceChangePercent']))
     },
     {
         'name': 'HTX',
@@ -60,15 +60,13 @@ class TonPriceBot:
         self.session = None
         self.prev_price = None
         self.prev_change = None
-        self.prev_price_str = None
-        self.prev_change_str = None
         self.last_message = None
 
     async def wait_for_next_minute(self):
         now = datetime.now(timezone.utc)
         wait_time = 60 - now.second - (now.microsecond / 1000000)
         if wait_time > 0:
-            logger.info(f"⏳ {wait_time:.1f}s")
+            logger.info(f"⏳ انتظار {wait_time:.1f} ثانیه")
             await asyncio.sleep(wait_time)
 
     async def get_price_from_api(self, api):
@@ -78,57 +76,42 @@ class TonPriceBot:
                     data = await response.json()
                     price, change = api['parse'](data)
                     return price, change, api['name']
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"خطا در {api['name']}: {e}")
         return None, None, None
 
-    async def get_new_price(self):
+    async def get_best_price(self):
         if not self.session:
             self.session = aiohttp.ClientSession()
         
         for api in APIS:
             price, change, name = await self.get_price_from_api(api)
-            
-            if price is None:
-                continue
-            
-            price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
-            change_str = f"{change:.2f}"
-            
-            if self.prev_price_str is None:
-                logger.info(f"✅ {name}: ${price_str} [{change_str}%]")
-                return price, change, price_str, change_str, name
-            
-            if price_str != self.prev_price_str or change_str != self.prev_change_str:
-                logger.info(f"✅ {name}: ${price_str} [{change_str}%]")
-                return price, change, price_str, change_str, name
-            else:
-                logger.info(f"⏭️ {name}: تکراری")
+            if price is not None:
+                return price, change, name
         
-        return None, None, None, None, None
+        return None, None, None
 
     async def send_price(self):
-        result = await self.get_new_price()
-        price, change, price_str, change_str, source = result
+        price, change, source = await self.get_best_price()
         
         if price is None:
-            logger.info("❌ همه تکراری")
+            logger.error("❌ هیچ API پاسخ نداد")
             return False
         
-        if self.prev_price is None:
-            arrow = "▲"
-        elif price > self.prev_price:
-            arrow = "▲"
-        elif price < self.prev_price:
-            arrow = "▼"
-        elif change > self.prev_change:
-            arrow = "▲"
-        elif change < self.prev_change:
-            arrow = "▼"
-        else:
-            arrow = "▲"
+        price_str = str(price.quantize(Decimal('0.001'), rounding=ROUND_DOWN))
+        change_str = f"{change:.2f}"
         
-        if change > 0:
+        if self.prev_price is None:
+            arrow = "▲" if change >= 0 else "▼"
+        else:
+            if price > self.prev_price:
+                arrow = "▲"
+            elif price < self.prev_price:
+                arrow = "▼"
+            else:
+                arrow = "▲" if change >= 0 else "▼"
+        
+        if change >= 0:
             change_text = f"[+{change_str}%]"
         else:
             change_text = f"[{change_str}%]"
@@ -136,6 +119,7 @@ class TonPriceBot:
         message = f"<b>${price_str} {arrow} {change_text}</b>"
         
         if message == self.last_message:
+            logger.info(f"⏭️ پیام تکراری - ارسال نشد: {message}")
             return False
         
         try:
@@ -149,19 +133,22 @@ class TonPriceBot:
             
             self.prev_price = price
             self.prev_change = change
-            self.prev_price_str = price_str
-            self.prev_change_str = change_str
             self.last_message = message
             return True
+            
         except Exception as e:
-            logger.error(f"❌ {e}")
+            logger.error(f"❌ خطا در ارسال: {e}")
             return False
 
     async def run(self):
-        logger.info("🚀 شروع")
+        logger.info("🚀 شروع بات قیمت TON")
         
-        me = await self.bot.get_me()
-        logger.info(f"@{me.username}")
+        try:
+            me = await self.bot.get_me()
+            logger.info(f"✅ بات متصل شد: @{me.username}")
+        except Exception as e:
+            logger.error(f"❌ خطا در اتصال به بات: {e}")
+            return
         
         while True:
             await self.wait_for_next_minute()
