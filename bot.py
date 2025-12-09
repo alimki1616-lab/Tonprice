@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = '8326225213:AAGsScRkwKKGipb_z_57vfGeDBw6Iz-hkdA'
-CHANNEL_USERNAME = '@Ton24Price'
+BOT_TOKEN = '8264511538:AAEYRrFXqyHSOSO0WXGpCblAdNY7mOGuMfQ'
+CHANNEL_USERNAME = '@TonEstimate'
 
 APIS = [
     {
